@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
   // Initialize polyscope
   polyscope::init();
 
-  std::string filename = "../bunnyhead.obj";
+  std::string filename = "../mesh.obj";
   std::cout << "loading: " << filename << std::endl;
 
   // Read the mesh
