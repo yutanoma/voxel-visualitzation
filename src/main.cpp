@@ -15,138 +15,20 @@
 #include "polyscope/messages.h"
 #include "polyscope/point_cloud.h"
 #include "polyscope/surface_mesh.h"
+#include "polyscope/volume_mesh.h"
 
 #include <iostream>
 #include <unordered_set>
 #include <utility>
 
-#include "args/args.hxx"
-#include "json/json.hpp"
+// @hirata ボクセルの一辺の長さ。実際のボクセルサイズより少し小さめに設定すると良い
+const double voxelSize = 0.05;
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
-// Options for algorithms
-int iVertexSource = 7;
-
-void addCurvatureScalar() {
-  using namespace Eigen;
-  using namespace std;
-
-  VectorXd K;
-  igl::gaussian_curvature(meshV, meshF, K);
-  SparseMatrix<double> M, Minv;
-  igl::massmatrix(meshV, meshF, igl::MASSMATRIX_TYPE_DEFAULT, M);
-  igl::invert_diag(M, Minv);
-  K = (Minv * K).eval();
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexScalarQuantity("gaussian curvature", K,
-                                polyscope::DataType::SYMMETRIC);
-}
-
-void computeDistanceFrom() {
-  Eigen::VectorXi VS, FS, VT, FT;
-  // The selected vertex is the source
-  VS.resize(1);
-  VS << iVertexSource;
-  // All vertices are the targets
-  VT.setLinSpaced(meshV.rows(), 0, meshV.rows() - 1);
-  Eigen::VectorXd d;
-  igl::exact_geodesic(meshV, meshF, VS, FS, VT, FT, d);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexDistanceQuantity(
-          "distance from vertex " + std::to_string(iVertexSource), d);
-}
-
-void computeParameterization() {
-  using namespace Eigen;
-  using namespace std;
-
-  // Fix two points on the boundary
-  VectorXi bnd, b(2, 1);
-  igl::boundary_loop(meshF, bnd);
-
-  if (bnd.size() == 0) {
-    polyscope::warning("mesh has no boundary, cannot parameterize");
-    return;
-  }
-
-  b(0) = bnd(0);
-  b(1) = bnd(round(bnd.size() / 2));
-  MatrixXd bc(2, 2);
-  bc << 0, 0, 1, 0;
-
-  // LSCM parametrization
-  Eigen::MatrixXd V_uv;
-  igl::lscm(meshV, meshF, b, bc, V_uv);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexParameterizationQuantity("LSCM parameterization", V_uv);
-}
-
-void computeNormals() {
-  Eigen::MatrixXd N_vertices;
-  igl::per_vertex_normals(meshV, meshF, N_vertices);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
-}
-
-void callback() {
-
-  static int numPoints = 2000;
-  static float param = 3.14;
-
-  ImGui::PushItemWidth(100);
-
-  // Curvature
-  if (ImGui::Button("add curvature")) {
-    addCurvatureScalar();
-  }
-  
-  // Normals 
-  if (ImGui::Button("add normals")) {
-    computeNormals();
-  }
-
-  // Param
-  if (ImGui::Button("add parameterization")) {
-    computeParameterization();
-  }
-
-  // Geodesics
-  if (ImGui::Button("compute distance")) {
-    computeDistanceFrom();
-  }
-  ImGui::SameLine();
-  ImGui::InputInt("source vertex", &iVertexSource);
-
-  ImGui::PopItemWidth();
-}
-
 int main(int argc, char **argv) {
-  // Configure the argument parser
-  args::ArgumentParser parser("A simple demo of Polyscope with libIGL.\nBy "
-                              "Nick Sharp (nsharp@cs.cmu.edu)",
-                              "");
-  args::Positional<std::string> inFile(parser, "mesh", "input mesh");
-
-  // Parse args
-  try {
-    parser.ParseCLI(argc, argv);
-  } catch (args::Help) {
-    std::cout << parser;
-    return 0;
-  } catch (args::ParseError e) {
-    std::cerr << e.what() << std::endl;
-
-    std::cerr << parser;
-    return 1;
-  }
-
   // Options
   polyscope::options::autocenterStructures = true;
   polyscope::view::windowWidth = 1024;
@@ -155,17 +37,51 @@ int main(int argc, char **argv) {
   // Initialize polyscope
   polyscope::init();
 
-  std::string filename = args::get(inFile);
+  std::string filename = "../bunnyhead.obj";
   std::cout << "loading: " << filename << std::endl;
 
   // Read the mesh
   igl::readOBJ(filename, meshV, meshF);
 
-  // Register the mesh with Polyscope
-  polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+  Eigen::MatrixXd hexVertices(meshV.rows() * 8, 3);
 
-  // Add the callback
-  polyscope::state::userCallback = callback;
+  for (int i = 0; i < meshV.rows(); i++) {
+    double len = voxelSize / 2;
+
+    hexVertices.row(i * 8 + 0) = meshV.row(i) + Eigen::RowVector3d(len, -len, -len);
+    hexVertices.row(i * 8 + 1) = meshV.row(i) + Eigen::RowVector3d(len, len, -len);
+    hexVertices.row(i * 8 + 2) = meshV.row(i) + Eigen::RowVector3d(-len, len, -len);
+    hexVertices.row(i * 8 + 3) = meshV.row(i) + Eigen::RowVector3d(-len, -len, -len);
+    hexVertices.row(i * 8 + 4) = meshV.row(i) + Eigen::RowVector3d(len, -len, len);
+    hexVertices.row(i * 8 + 5) = meshV.row(i) + Eigen::RowVector3d(len, len, len);
+    hexVertices.row(i * 8 + 6) = meshV.row(i) + Eigen::RowVector3d(-len, len, len);
+    hexVertices.row(i * 8 + 7) = meshV.row(i) + Eigen::RowVector3d(-len, -len, len);
+  }
+
+  Eigen::MatrixXi hexIndices(meshV.rows(), 8);
+
+  for (int i = 0; i < meshV.rows(); i++) {
+    hexIndices.row(i) << i * 8 + 0, i * 8 + 1, i * 8 + 2, i * 8 + 3, i * 8 + 4, i * 8 + 5, i * 8 + 6, i * 8 + 7;
+  }
+
+  std::vector<double> hexValues(meshV.rows());
+
+   std::ifstream file("../data.txt");
+   if (!file) {
+      std::cerr << "Could not open the file!" << std::endl;
+      return 1;
+    }
+
+  for (int i = 0; i < meshV.rows(); i++) {
+    double num;
+    file >> num;
+    hexValues[i] = num;
+  }
+
+  // Register the mesh with Polyscope
+  polyscope::registerHexMesh("input mesh", hexVertices, hexIndices);
+
+  polyscope::getVolumeMesh("input mesh")->addCellScalarQuantity("values", hexValues);
 
   // Show the gui
   polyscope::show();
